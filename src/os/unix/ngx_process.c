@@ -87,6 +87,8 @@ ngx_signal_t  signals[] = {
 void *heap_copy;
 int64_t heap_copy_offset;
 
+extern void *libc_heap_start;
+
 ngx_pid_t
 ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
     char *name, ngx_int_t respawn)
@@ -200,9 +202,9 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
     case 0: {
 		uint64_t heap_start, heap_end;
 
-		/* More or less harcoded heap start for static binaries with ASLR
-		 * disabled */
-		heap_start = 0x6e7000;
+		/* We use a custom libc that records  the start of the heap and make it
+		 * available in this variable */
+		heap_start = (uint64_t)libc_heap_start;
 		heap_end = (uint64_t)sbrk(0);
 		printf("[%d] heap: 0x%lx - 0x%lx (size 0x%lx)\n", getpid(), heap_start,
 				heap_end, heap_end - heap_start);
