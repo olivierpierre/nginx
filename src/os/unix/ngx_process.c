@@ -25,6 +25,8 @@ static void ngx_signal_handler(int signo, siginfo_t *siginfo, void *ucontext);
 static void ngx_process_get_status(void);
 static void ngx_unlock_mutexes(ngx_pid_t pid);
 
+extern char **ngx_os_environ;
+
 
 int              ngx_argc;
 char           **ngx_argv;
@@ -82,6 +84,8 @@ ngx_signal_t  signals[] = {
     { 0, NULL, "", NULL }
 };
 
+void *heap_copy;
+int64_t heap_copy_offset;
 
 ngx_pid_t
 ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
@@ -193,11 +197,67 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
         ngx_close_channel(ngx_processes[s].channel, cycle->log);
         return NGX_INVALID_PID;
 
-    case 0:
+    case 0: {
+		uint64_t heap_start, heap_end;
+
+		/* More or less harcoded heap start for static binaries with ASLR
+		 * disabled */
+		heap_start = 0x6e7000;
+		heap_end = (uint64_t)sbrk(0);
+		printf("[%d] heap: 0x%lx - 0x%lx (size 0x%lx)\n", getpid(), heap_start,
+				heap_end, heap_end - heap_start);
+
+		/* Create a copy of the heap */
+		heap_copy = mmap(0x0, heap_end-heap_start, PROT_READ | PROT_WRITE,
+				MAP_PRIVATE | MAP_ANONYMOUS, -1, 0x0);
+		if(!heap_copy) {
+			fprintf(stderr, "Cannot allocate memory for heap copy\n");
+			exit(-1);
+		}
+
+		heap_copy_offset = (uint64_t)heap_copy - heap_start;
+		memcpy(heap_copy, (void *)heap_start, heap_end-heap_start);
+
+		printf("[%d] Created a copy of the heap: 0x%lx - 0x%lx, offset 0x%lx\n",
+				getpid(), (uint64_t)heap_copy,
+				(uint64_t)heap_copy-(heap_end-heap_start),
+				(uint64_t)heap_copy-heap_start);
+
+		printf("before patch: %p\n", cycle->conf_ctx);
+
+#define PATCH(x) x = (void *)((uint64_t)(x)+heap_copy_offset)
+
+		/* patch cycle */
+//		cycle = (void *)((uint64_t)cycle+heap_copy_offset);
+		PATCH(cycle);
+		PATCH(cycle->conf_ctx);
+		PATCH(cycle->conf_ctx[0]);
+
+		ngx_core_conf_t *ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx,
+				ngx_core_module);
+		PATCH(ccf->env.elts);
+
+		char **p = ngx_os_environ;
+		while(p) {
+			__asm__("int $3");
+			char *env = *p;
+			PATCH(env);
+			p++;
+		}
+
+		printf("[%d] cycle is now %p\n", getpid(), cycle);
+
+		printf("[%d] unmapping heap now ...\n", getpid());
+		mprotect((void *)heap_start, heap_end-heap_start, PROT_NONE);
+
+		printf("after patch: %p\n", cycle->conf_ctx);
+
         ngx_parent = ngx_pid;
         ngx_pid = ngx_getpid();
         proc(cycle, data);
         break;
+
+	}
 
     default:
         break;
@@ -288,6 +348,10 @@ ngx_init_signals(ngx_log_t *log)
     struct sigaction   sa;
 
     for (sig = signals; sig->signo != 0; sig++) {
+
+		/* Pierre: just die on signal for now, so let's not install handlers  */
+		continue;
+
         ngx_memzero(&sa, sizeof(struct sigaction));
 
         if (sig->handler) {

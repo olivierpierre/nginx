@@ -43,6 +43,8 @@ ngx_daemon(ngx_log_t *log)
         return NGX_ERROR;
     }
 
+	/* Pierre: commented this because I need to print stuff on stdout */
+#if 0
     if (dup2(fd, STDIN_FILENO) == -1) {
         ngx_log_error(NGX_LOG_EMERG, log, ngx_errno, "dup2(STDIN) failed");
         return NGX_ERROR;
@@ -53,7 +55,6 @@ ngx_daemon(ngx_log_t *log)
         return NGX_ERROR;
     }
 
-#if 0
     if (dup2(fd, STDERR_FILENO) == -1) {
         ngx_log_error(NGX_LOG_EMERG, log, ngx_errno, "dup2(STDERR) failed");
         return NGX_ERROR;

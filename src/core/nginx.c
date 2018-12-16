@@ -187,8 +187,8 @@ static u_char      *ngx_conf_file;
 static u_char      *ngx_conf_params;
 static char        *ngx_signal;
 
-
-static char **ngx_os_environ;
+/* Pierre: need to patch this from elsewhere so I removed the static keyword */
+char **ngx_os_environ;
 
 
 int ngx_cdecl
