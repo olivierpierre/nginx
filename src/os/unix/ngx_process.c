@@ -89,6 +89,19 @@ int64_t heap_copy_offset;
 
 extern void *libc_heap_start;
 
+struct bin {
+	volatile int lock[2];
+	struct chunk *head;
+	struct chunk *tail;
+};
+
+extern struct {
+	volatile uint64_t binmap;
+	struct bin bins[64];
+	volatile int free_lock[2];
+} mal;
+
+
 ngx_pid_t
 ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
     char *name, ngx_int_t respawn)
@@ -202,6 +215,23 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
     case 0: {
 		uint64_t heap_start, heap_end;
 
+		/* Ok here I am voluntarily increasing the break by allocating a lot
+		 * of small objects. After I unmap the real heap if the libc needs
+		 * to increase the break things will fail because the OS will give us
+		 * an address in the unmapped area */
+		char *x1 = malloc(64*1024);
+		char *x2 = malloc(64*1024);
+		char *x3 = malloc(64*1024);
+		char *x4 = malloc(64*1024);
+		memset(x1, 0x0, 64*1024);
+		memset(x2, 0x0, 64*1024);
+		memset(x3, 0x0, 64*1024);
+		memset(x4, 0x0, 64*1024);
+		free(x1);
+		free(x2);
+		free(x3);
+		free(x4);
+
 		/* We use a custom libc that records  the start of the heap and make it
 		 * available in this variable */
 		heap_start = (uint64_t)libc_heap_start;
@@ -225,34 +255,51 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
 				(uint64_t)heap_copy-(heap_end-heap_start),
 				(uint64_t)heap_copy-heap_start);
 
-		printf("before patch: %p\n", cycle->conf_ctx);
+		/* Stupidly patch everything in the copied heap that looks like a
+		 * pointer to the heap */
+		uint64_t *heap_ptr = heap_copy;
+		int heap_ptrs_patched = 0;
+		while((uint64_t)heap_ptr < ((uint64_t)heap_copy + (heap_end-heap_start))) {
+			if(*heap_ptr >= heap_start && *heap_ptr < heap_end) {
+			//	printf("[%d] found 0x%lx @%p\n", getpid(), *heap_ptr, heap_ptr);
+				*heap_ptr = *heap_ptr + heap_copy_offset;
+				heap_ptrs_patched++;
+			}
+			heap_ptr++;
+		}
 
-#define PATCH(x) x = (void *)((uint64_t)(x)+heap_copy_offset)
+		/* Patch data and BSS */
+		heap_ptr = (void *)0x0070b000; /* start of .data */
+		int data_ptrs_patched = 0;
+		while((uint64_t)heap_ptr < heap_start) { /* bss ends where heap starts */
+			if(*heap_ptr >= heap_start && *heap_ptr < heap_end) {
+				*heap_ptr = *heap_ptr + heap_copy_offset;
+				data_ptrs_patched++;
+			}
+			heap_ptr++;
+		}
 
-		/* patch cycle */
-//		cycle = (void *)((uint64_t)cycle+heap_copy_offset);
+		printf("[%d] bruteforce patched %d pointers (%d heap pointers, %d data "
+				"pointers\n", getpid(), heap_ptrs_patched+data_ptrs_patched,
+				heap_ptrs_patched, data_ptrs_patched);
+
+#define PATCH(x) if((uint64_t)x >= heap_start && (uint64_t)x < (heap_start-heap_end)) \
+		x = (void *)((uint64_t)(x)+heap_copy_offset)
+
+		/* patch cycle because it is on the stack, in theory there can be
+		 * additional pointers on the stack */
 		PATCH(cycle);
-		PATCH(cycle->conf_ctx);
-		PATCH(cycle->conf_ctx[0]);
 
-		ngx_core_conf_t *ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx,
-				ngx_core_module);
-		PATCH(ccf->env.elts);
-
+		/* patch nginx copy of env. variables, for some reason it is not taken
+		 * care of by our bruteforce method above ... */
 		char **p = ngx_os_environ;
-		while(p) {
-			__asm__("int $3");
-			char *env = *p;
-			PATCH(env);
+		while(*p) {
+			PATCH(*p);
 			p++;
 		}
 
-		printf("[%d] cycle is now %p\n", getpid(), cycle);
-
 		printf("[%d] unmapping heap now ...\n", getpid());
 		mprotect((void *)heap_start, heap_end-heap_start, PROT_NONE);
-
-		printf("after patch: %p\n", cycle->conf_ctx);
 
         ngx_parent = ngx_pid;
         ngx_pid = ngx_getpid();
