@@ -88,12 +88,8 @@ void *heap_copy;
 int64_t heap_copy_offset;
 
 extern void *libc_heap_start;
-
-struct bin {
-	volatile int lock[2];
-	struct chunk *head;
-	struct chunk *tail;
-};
+extern void heap_update_mdata(uint64_t heap_start, uint64_t heap_end,
+		uint64_t heap_copy_offset);
 
 ngx_pid_t
 ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
@@ -248,6 +244,9 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
 				(uint64_t)heap_copy-(heap_end-heap_start),
 				(uint64_t)heap_copy-heap_start);
 
+		/* Update freelist pointers */
+		heap_update_mdata(heap_start, heap_end, heap_copy_offset);
+
 		/* Stupidly patch everything in the copied heap that looks like a
 		 * pointer to the heap */
 		uint64_t *heap_ptr = heap_copy;
@@ -276,7 +275,7 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
 				"pointers\n", getpid(), heap_ptrs_patched+data_ptrs_patched,
 				heap_ptrs_patched, data_ptrs_patched);
 
-#define PATCH(x) if((uint64_t)x >= heap_start && (uint64_t)x < (heap_start-heap_end)) \
+#define PATCH(x) if((uint64_t)x >= heap_start && (uint64_t)x < (heap_start+heap_end)) \
 		x = (void *)((uint64_t)(x)+heap_copy_offset)
 
 		/* patch cycle because it is on the stack, in theory there can be
