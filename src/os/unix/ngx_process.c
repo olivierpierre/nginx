@@ -95,13 +95,6 @@ struct bin {
 	struct chunk *tail;
 };
 
-extern struct {
-	volatile uint64_t binmap;
-	struct bin bins[64];
-	volatile int free_lock[2];
-} mal;
-
-
 ngx_pid_t
 ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
     char *name, ngx_int_t respawn)
